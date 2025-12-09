@@ -1,0 +1,32 @@
+name: smart_clothesline_app
+description: Ứng dụng hệ thống giám sát và điều khiển giàn phơi thông minh
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  firebase_core: ^4.2.1
+  firebase_database: ^12.1.0
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  lottie: ^3.1.2                     # Đã thêm để dùng animation đẹp
+  http: ^1.6.0
+  firebase_messaging: ^16.0.4
+  flutter_local_notifications: ^19.5.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Nếu bạn dùng Lottie animation thì thêm dòng này
+  assets:
+    - assets/lottie/
+    - assets/icons/
