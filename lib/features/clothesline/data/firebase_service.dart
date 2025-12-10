@@ -44,6 +44,94 @@ class FirebaseService {
     });
   }
 
+  /// Stream of the whole `control` node (includes `hasClothes`, `stepper`, etc.)
+  Stream get controlStream => _db.child('control').onValue;
+
+  /// Read the current `hasClothes` flag (defaults to false).
+  Future<bool> getHasClothes() async {
+    final snap = await _db.child('control/hasClothes').get();
+    if (!snap.exists) return false;
+    final v = snap.value;
+    return v == true || v == 'true' || v == 1;
+  }
+
+  /// Set the `hasClothes` flag under `/control/hasClothes`.
+  Future<void> setHasClothes(bool has) async {
+    await _db.child('control/hasClothes').set(has);
+    // Also write a small audit entry under control/commands for history
+    final ref = _db.child('control/commands').push();
+    await ref.set({
+      'type': 'SET_HAS_CLOTHES',
+      'value': has,
+      'source': 'app',
+      'timestamp': ServerValue.timestamp,
+      'status': 'done',
+    });
+  }
+
+  /// Set the numeric `control/stepper` value (1 or -1). Also create a
+  /// command record under `/control/commands` so devices can pick it up.
+  Future<void> pushStepperCommand(int step) async {
+    // write the direct control value (device can watch this node)
+    await _db.child('control/stepper').set(step);
+
+    // also push a command entry for history and for simulators/devices to consume
+    final ref = _db.child('control/commands').push();
+    final payload = {
+      'type': 'STEPPER',
+      'step': step,
+      'source': 'app',
+      'timestamp': ServerValue.timestamp,
+      'status': 'pending',
+    };
+    await ref.set(payload);
+  }
+
+  /// Reminders: stream of `/reminders` node (useful for UI list)
+  Stream get remindersStream => _db.child('reminders').orderByChild('when').onValue;
+
+  /// Add a reminder entry under `/reminders`.
+  /// `when` should be a unix-millis timestamp or ISO string; we store as ServerValue if null.
+  Future<String> addReminder({required String title, required int whenMillis, String? note}) async {
+    final ref = _db.child('reminders').push();
+    final payload = {
+      'title': title,
+      'when': whenMillis,
+      'note': note ?? '',
+      'createdAt': ServerValue.timestamp,
+      'done': false,
+    };
+    await ref.set(payload);
+    return ref.key ?? '';
+  }
+
+  /// Safely convert a [DataSnapshot] value to a Map<String, dynamic> if possible.
+  /// Returns null when the snapshot is null or not a map.
+  Map<String, dynamic>? snapshotToMap(DataSnapshot snap) {
+    final v = snap.value;
+    if (v == null) return null;
+    if (v is Map) {
+      final out = <String, dynamic>{};
+      v.forEach((k, val) {
+        out[k.toString()] = val;
+      });
+      return out;
+    }
+    return null;
+  }
+
+  /// One-time read of `/status` as a Map<String, dynamic>? (safe conversion).
+  Future<Map<String, dynamic>?> getStatusOnce() async {
+    final snap = await _db.child('status').get();
+    return snapshotToMap(snap);
+  }
+
+  /// One-time read of `/control` as a Map<String, dynamic>? (safe conversion).
+  Future<Map<String, dynamic>?> getControlOnce() async {
+    final snap = await _db.child('control').get();
+    return snapshotToMap(snap);
+  }
+
   /// Pushes a control command into `/control/commands` and returns the
   /// generated command id. The command should contain at least:
   /// { 'type': 'SET_POSITION', 'position': 'IN'|'OUT', 'source': 'app'|'auto', ... }

@@ -49,3 +49,54 @@ exports.sendPendingNotification = functions.database
 
     return null;
   });
+
+// Trigger when `/status` changes: create a pending notification so
+// the existing `sendPendingNotification` function will forward it to FCM.
+exports.onStatusChange = functions.database
+  .ref('/status')
+  .onWrite(async (change, context) => {
+    const before = change.before.exists() ? change.before.val() : {};
+    const after = change.after.exists() ? change.after.val() : {};
+
+    // Determine if a meaningful notification should be emitted
+    let title = 'Giàn phơi';
+    let body = null;
+
+    // Position changed
+    if (before.position !== after.position) {
+      if (after.position === 'OUT') {
+        body = 'Giàn phơi đang kéo ra phơi.';
+      } else if (after.position === 'IN') {
+        body = 'Giàn phơi đã rút vào nhà.';
+      }
+    }
+
+    // Rain started
+    if (!before.rain && after.rain) {
+      body = 'Trời bắt đầu mưa — giàn phơi đã rút vào trong.';
+      title = 'Cảnh báo mưa';
+    }
+
+    // Optional: if rain stopped or other events, add more branches
+
+    if (!body) {
+      // nothing noteworthy to notify
+      return null;
+    }
+
+    // Push a pending notification entry (Cloud Function `sendPendingNotification` will send it)
+    try {
+      const ref = admin.database().ref('/notifications/pending').push();
+      await ref.set({
+        title: title,
+        body: body,
+        timestamp: admin.database.ServerValue.TIMESTAMP,
+        delivered: false,
+        source: 'status-trigger'
+      });
+    } catch (err) {
+      console.error('Failed to write pending notification:', err);
+    }
+
+    return null;
+  });

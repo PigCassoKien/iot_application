@@ -3,11 +3,13 @@
 // lib/features/clothesline/presentation/pages/home_page.dart
 import 'package:flutter/material.dart';
 import 'dart:async';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:lottie/lottie.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../../data/firebase_service.dart';
 import '../../data/weather_service.dart';
+import 'dashboard_panel.dart';
+import 'forecast_panel.dart';
+import 'reminders_panel.dart';
+import 'controls_panel.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,19 +19,19 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  // Services
   final FirebaseService _fb = FirebaseService();
-
-  // Weather
   final WeatherService _weatherService = WeatherService();
+
+  // Forecast data
   List<WeatherDay> _forecast = [];
   List<WeatherHour> _hourly = [];
   double _forecastLat = 21.0278;
   double _forecastLon = 105.8342;
   DateTime? _forecastUpdatedAt;
   String? _locationName;
-  Duration _forecastInterval = const Duration(minutes: 15);
-  Timer? _weatherTimer;
 
+  // Device/status
   String position = 'IN';
   String mode = 'AUTO';
   bool isRaining = false;
@@ -37,68 +39,139 @@ class _HomePageState extends State<HomePage> {
   double temperature = 0.0;
   double humidity = 0.0;
   double wind = 0.0;
-  String? _lastPosition;
+
+  // App state
+  bool _hasClothes = false;
+  List<Map<String, dynamic>> _reminders = [];
   final Map<String, StreamSubscription> _cmdSubs = {};
   bool _isCommandRunning = false;
+  String _advice = '';
+  String _forecastSummary = '';
+
+  StreamSubscription? _statusSub;
+  StreamSubscription? _controlSub;
+  StreamSubscription? _remindersSub;
 
   @override
   void initState() {
     super.initState();
+    // Initial fetch
+    _loadForecast();
 
-    _fb.statusStream.listen((event) {
-      final DataSnapshot snapshot = event.snapshot;
-      final data = snapshot.value;
-
-      if (!mounted) return;
-      if (data == null || data is! Map<Object?, Object?>) {
-        setState(() {
-          position = 'IN';
-          mode = 'AUTO';
-          isRaining = false;
-          light = 0;
-        });
-        return;
-      }
-
-      final map = data;
-      final newPosition = (map['position'] as String?) ?? 'IN';
-      final newMode = (map['mode'] as String?) ?? 'AUTO';
-      final newRain = (map['rain'] as bool?) ?? false;
-      final newLight = (map['light'] as num?)?.toInt() ?? 0;
-      final newTemp = (map['temperature'] as num?)?.toDouble() ?? 0.0;
-      final newHumidity = (map['humidity'] as num?)?.toDouble() ?? 0.0;
-      final newWind = (map['wind'] as num?)?.toDouble() ?? 0.0;
-
-      final oldPosition = position;
-      setState(() {
-        position = newPosition;
-        mode = newMode;
-        isRaining = newRain;
-        light = newLight;
-        temperature = newTemp;
-        humidity = newHumidity;
-        wind = newWind;
-      });
-
-      _lastPosition ??= oldPosition;
-      if (_lastPosition != position) {
-        final msg = position == 'OUT' ? 'Đang kéo ra phơi' : 'Đang kéo vào nhà';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-        _lastPosition = position;
-      }
+    // Subscribe to realtime status to update UI values
+    _statusSub = _fb.statusStream.listen((event) {
+      final snap = event.snapshot;
+      final map = _fb.snapshotToMap(snap);
+      if (map == null) return;
+      _applyStatusMap(map);
     });
 
-    _loadForecast();
-    _weatherTimer = Timer.periodic(_forecastInterval, (_) => _loadForecast());
+    // Listen to control node for hasClothes and stepper etc
+    _controlSub = _fb.controlStream.listen((event) {
+      final snap = event.snapshot;
+      final map = _fb.snapshotToMap(snap);
+      if (map == null) return;
+      _applyControlMap(map);
+    });
+
+    // Reminders stream
+    _remindersSub = _fb.remindersStream.listen((event) {
+      final snap = event.snapshot;
+      final m = _fb.snapshotToMap(snap);
+      if (m == null) return setState(() => _reminders = []);
+      final List<Map<String, dynamic>> list = [];
+      m.forEach((k, v) {
+        if (v is Map) {
+          final r = Map<String, dynamic>.from(v.cast<String, dynamic>());
+          r['id'] = k;
+          list.add(r);
+        }
+      });
+      // sort by when
+      list.sort((a, b) => (a['when'] as int? ?? 0).compareTo(b['when'] as int? ?? 0));
+      setState(() => _reminders = list);
+    });
+
+    // Perform one-time initial reads so UI shows current DB immediately
+    _fb.getStatusOnce().then((m) {
+      if (m != null) _applyStatusMap(m);
+    }).catchError((_) {});
+
+    _fb.getControlOnce().then((m) {
+      if (m != null) _applyControlMap(m);
+    }).catchError((_) {});
+  }
+
+  void _applyStatusMap(Map<String, dynamic> map) {
+    // Helper to read numeric values from multiple possible keys
+    num? _readNum(Map<String, dynamic> m, List<String> keys) {
+      for (final k in keys) {
+        if (k.contains('.')) {
+          final parts = k.split('.');
+          var cur = m;
+          dynamic val;
+          for (var i = 0; i < parts.length; i++) {
+            final p = parts[i];
+            if (cur[p] is Map) {
+              cur = Map<String, dynamic>.from(cur[p]);
+              continue;
+            } else {
+              val = cur[p];
+              break;
+            }
+          }
+          if (val is num) return val;
+          if (val is String) return num.tryParse(val);
+        } else {
+          final val = m[k];
+          if (val is num) return val;
+          if (val is String) return num.tryParse(val);
+        }
+      }
+      return null;
+    }
+
+    final tempVal = _readNum(map, ['temperature', 'temp', 'sensor.temperature', 'sensor.temp']);
+    final humVal = _readNum(map, ['humidity', 'sensor.humidity', 'sensor.hum']);
+    final lightVal = _readNum(map, ['light', 'sensor.light', 'lux']);
+    final windVal = _readNum(map, ['wind', 'sensor.wind']);
+
+    final rainVal = map['rain'] ?? map['isRaining'] ?? map['raining'] ?? (map['sensor'] is Map ? (map['sensor']['rain'] ?? map['sensor']['isRaining']) : null);
+
+    if (!mounted) return;
+    setState(() {
+      temperature = tempVal?.toDouble() ?? temperature;
+      humidity = humVal?.toDouble() ?? humidity;
+      light = (lightVal != null) ? lightVal.toInt() : light;
+      wind = windVal?.toDouble() ?? wind;
+      isRaining = (rainVal == true) || (rainVal is String && (rainVal == 'true' || rainVal == '1')) || (rainVal is num && rainVal != 0);
+      position = (map['position'] as String?) ?? position;
+      mode = (map['mode'] as String?) ?? mode;
+    });
+
+    // Recompute advice when sensors/status change
+    _computeAdvice();
+  }
+
+  void _applyControlMap(Map<String, dynamic> map) {
+    final hc = map['hasClothes'];
+    if (hc == null) return;
+    bool val = false;
+    if (hc is bool) val = hc;
+    else if (hc is num) val = hc != 0;
+    else if (hc is String) val = hc == 'true' || hc == '1';
+    if (!mounted) return;
+    setState(() => _hasClothes = val);
   }
 
   @override
   void dispose() {
-    _weatherTimer?.cancel();
-    for (final sub in _cmdSubs.values) {
-      sub.cancel();
+    for (final s in _cmdSubs.values) {
+      try { s.cancel(); } catch (_) {}
     }
-    _cmdSubs.clear();
+    try { _statusSub?.cancel(); } catch (_) {}
+    try { _controlSub?.cancel(); } catch (_) {}
+    try { _remindersSub?.cancel(); } catch (_) {}
     super.dispose();
   }
 
@@ -111,6 +184,88 @@ class _HomePageState extends State<HomePage> {
       _locationName = res?.locationName;
       _forecastUpdatedAt = DateTime.now();
     });
+
+    // Recompute advice after loading forecast
+    // Also compute a short human-readable forecast summary for the dashboard
+    if (_forecast.isNotEmpty) {
+      final next = _forecast.first;
+      _forecastSummary = 'Ngày mai: ${next.tempMax.toStringAsFixed(0)}°/${next.tempMin.toStringAsFixed(0)}° • Mưa ${next.precipitationProbability.toStringAsFixed(0)}% • ${next.precipitationSum.toStringAsFixed(1)} mm';
+    } else {
+      _forecastSummary = '';
+    }
+    _computeAdvice();
+  }
+
+  void _computeAdvice() {
+    // Advice must be based on forecast data when available (user request).
+    String advice = '';
+    if (_forecast.isNotEmpty) {
+      final next = _forecast.first;
+      final pProb = next.precipitationProbability; // percent 0..100
+      final pSum = next.precipitationSum;
+
+      if (pProb >= 60 || pSum >= 1.0) {
+        advice = 'Ngày mai có khả năng mưa (${pProb.toStringAsFixed(0)}%) — khuyến nghị: mang đi sấy hoặc phơi trong nhà.';
+      } else if (pProb >= 30) {
+        advice = 'Có khả năng mưa nhẹ (${pProb.toStringAsFixed(0)}%) — cân nhắc phơi trong nhà hoặc theo dõi thời tiết.';
+      } else {
+        // Good day if low precip probability and reasonable max temp
+        if (next.precipitationProbability < 30 && next.tempMax >= 12) {
+          advice = 'Thời tiết ngày mai thuận lợi — nên phơi ngoài trời.';
+        } else {
+          advice = 'Thời tiết ngày mai không có mưa — cân nhắc phơi nếu cần.';
+        }
+      }
+    } else {
+      // No forecast available — fall back to sensor hints
+      if (humidity >= 85.0) advice = 'Không có dữ liệu dự báo — độ ẩm cao, cân nhắc sấy.';
+      else if (isRaining) advice = 'Không có dữ liệu dự báo và đang mưa — mang đi sấy.';
+      else advice = 'Không có dữ liệu dự báo — theo dõi thời tiết trước khi phơi.';
+    }
+
+    if (!mounted) return;
+    setState(() => _advice = advice);
+  }
+
+
+  Future<void> _showAddReminderDialog() async {
+    final titleCtrl = TextEditingController();
+    DateTime chosen = DateTime.now().add(const Duration(hours: 1));
+    final picked = await showDialog<DateTime?>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx2, setState2) {
+          return AlertDialog(
+            title: const Text('Thêm nhắc nhở'),
+            content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Tiêu đề')), const SizedBox(height: 8), Text('Thời gian: ${chosen.toLocal().toString().split('.').first}'), Row(children: [TextButton(onPressed: () async { final d = await showDatePicker(context: ctx2, initialDate: chosen, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 365))); if (d != null) { chosen = DateTime(d.year, d.month, d.day, chosen.hour, chosen.minute); setState2(() {}); } }, child: const Text('Chọn ngày')), TextButton(onPressed: () async { final t = await showTimePicker(context: ctx2, initialTime: TimeOfDay.fromDateTime(chosen)); if (t != null) { chosen = DateTime(chosen.year, chosen.month, chosen.day, t.hour, t.minute); setState2(() {}); } }, child: const Text('Chọn giờ'))])]),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx2, null), child: const Text('Hủy')),
+              ElevatedButton(onPressed: () {
+                if (titleCtrl.text.trim().isEmpty) return;
+                Navigator.pop(ctx2, DateTime.fromMillisecondsSinceEpoch(chosen.millisecondsSinceEpoch));
+              }, child: const Text('Lưu')),
+            ],
+          );
+        });
+      },
+    );
+    if (picked != null) {
+      try {
+        await _fb.addReminder(title: titleCtrl.text.trim(), whenMillis: picked.millisecondsSinceEpoch);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã thêm nhắc nhở')));
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Thêm nhắc nhở thất bại: $e')));
+      }
+    }
+  }
+
+  Future<void> _markReminderDone(String id) async {
+    try {
+      await FirebaseDatabase.instance.ref('reminders/$id').update({'done': true});
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã đánh dấu hoàn thành')));
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Không thể cập nhật nhắc nhở: $e')));
+    }
   }
 
   Future<void> _pushCommand(String pos) async {
@@ -128,7 +283,19 @@ class _HomePageState extends State<HomePage> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Gửi lệnh đến thiết bị...')));
 
     try {
+      // Update position immediately in DB so clients reflect the change.
+      try {
+        await _fb.setPosition(pos);
+      } catch (_) {}
+
       final cmdId = await _fb.pushControlCommand({'type': 'SET_POSITION', 'position': pos, 'source': 'app'});
+
+      // Send a user-visible notification about manual action
+      try {
+        final title = 'Yêu cầu tay: ${pos == 'OUT' ? 'Kéo ra phơi' : 'Kéo vào nhà'}';
+        final body = 'Người dùng đã yêu cầu ${pos == 'OUT' ? 'kéo quần áo ra phơi' : 'kéo quần áo vào nhà'}.';
+        await _fb.sendNotification(title, body);
+      } catch (_) {}
       final ref = FirebaseDatabase.instance.ref('control/commands/$cmdId');
       final sub = ref.onValue.listen((event) {
         final snap = event.snapshot;
@@ -166,290 +333,218 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _toggleHasClothes() async {
+    final newVal = !_hasClothes;
+    try {
+      await _fb.setHasClothes(newVal);
+      setState(() => _hasClothes = newVal);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(newVal ? 'Đã đặt: Có quần áo trên giá' : 'Đã đặt: Không có quần áo trên giá')));
+
+      // Per UX: when user marks clothes present, request stepper=1 to pull out
+      if (newVal) {
+        // if raining, warn user and don't trigger
+        if (isRaining) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cảnh báo: Trời đang mưa — không kéo ra')));
+        } else {
+          await _fb.pushStepperCommand(1);
+        }
+      } else {
+        // When user marks removed, request stepper -1 to retract
+        await _fb.pushStepperCommand(-1);
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Không thể cập nhật trạng thái: $e')));
+    }
+  }
+
+  Future<void> _sendStepper(int step) async {
+    // Guard: if trying to pull OUT but no clothes or raining, block
+    if (step == 1) {
+      if (!_hasClothes) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Không có quần áo để kéo ra.')));
+        return;
+      }
+      if (isRaining) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trời đang mưa — không thực hiện kéo ra.')));
+        return;
+      }
+    }
+    try {
+      await _fb.pushStepperCommand(step);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Gửi lệnh điều khiển stepper...')));
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gửi lệnh thất bại: $e')));
+    }
+  }
+
+  Future<void> _confirmStepper(int step) async {
+    final actionText = step == 1 ? 'kéo ra' : 'thu về';
+    final title = step == 1 ? 'Xác nhận: Kéo ra' : 'Xác nhận: Thu về';
+
+    // Quick guard: prevent attempting when not allowed
+    if (step == 1 && (isRaining || !_hasClothes)) {
+      final msg = isRaining ? 'Trời đang mưa — không thể kéo ra.' : 'Không có quần áo để kéo ra.';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text('Bạn có chắc muốn $actionText không?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Xác nhận')),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _sendStepper(step);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isOutside = position == 'OUT';
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            const Text('Giàn Phơi Thông Minh', style: TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 2),
-            Text(_locationName ?? 'Hà Nội', style: const TextStyle(fontSize: 12, color: Colors.white70)),
-          ],
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Text('Giàn Phơi Thông Minh', style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 2),
+              Text(_locationName ?? 'Hà Nội', style: const TextStyle(fontSize: 20, color: Color.fromARGB(179, 57, 15, 15))),
+            ],
+          ),
+          centerTitle: true,
+          backgroundColor: const Color.fromARGB(255, 9, 164, 102),
+          elevation: 0,
+          bottom: const TabBar(tabs: [Tab(text: 'Tổng quan', icon: Icon(Icons.dashboard)), Tab(text: 'Điều khiển', icon: Icon(Icons.settings))]),
         ),
-        centerTitle: true,
-        backgroundColor: Colors.indigo[600],
-        elevation: 0,
-      ),
-      body: SafeArea(
-        child: LayoutBuilder(builder: (context, constraints) {
-          final wide = constraints.maxWidth > 760;
-          return Container(
-            padding: const EdgeInsets.all(16),
-            color: isOutside ? Colors.orange[25] : Colors.blueGrey[25],
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (wide)
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          flex: 5,
-                          child: Card(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            elevation: 6,
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Lottie.asset(isOutside ? 'assets/lottie/clothesline_out.json' : 'assets/lottie/clothesline_in.json', height: 260, fit: BoxFit.contain, repeat: true),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          flex: 4,
-                          child: Column(
-                            children: [
-                              Card(
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                elevation: 4,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
-                                  child: Column(
-                                    children: [
-                                      Text(isOutside ? 'ĐANG PHƠI NGOÀI TRỜI' : 'ĐÃ KÉO VÀO TRONG NHÀ', style: GoogleFonts.kanit(fontSize: 22, fontWeight: FontWeight.bold, color: isOutside ? Colors.orange[800] : Colors.indigo[800])),
-                                      const SizedBox(height: 12),
-                                      Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-                                        _smallMetric(Icons.umbrella, isRaining ? 'Mưa' : 'Tạnh', isRaining ? Colors.red : Colors.green),
-                                        _smallMetric(Icons.wb_sunny, '$light lx', Colors.orange),
-                                        _smallMetric(Icons.thermostat, '${temperature.toStringAsFixed(1)}°C', Colors.redAccent),
-                                      ]),
-                                      const SizedBox(height: 12),
-                                      Row(children: [Expanded(child: ElevatedButton.icon(onPressed: () => _fb.sendNotification('Yêu cầu', 'Vui lòng kiểm tra thiết bị'), icon: const Icon(Icons.notifications), label: const Text('Gửi thông báo')))]),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              Card(
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                elevation: 3,
-                                child: Padding(
-                                  padding: const EdgeInsets.all(12),
-                                  child: Column(
-                                    children: [
-                                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Cập nhật cảm biến', style: TextStyle(fontWeight: FontWeight.w600)), Text(mode, style: const TextStyle(color: Colors.grey))]),
-                                      const SizedBox(height: 8),
-                                      Wrap(spacing: 8, runSpacing: 8, children: [_chipMetric('Gió', '${wind.toStringAsFixed(1)} m/s'), _chipMetric('Độ ẩm', '${humidity.toStringAsFixed(0)} %'), _chipMetric('Vị trí', position)]),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    )
-                  else
-                    Column(
-                      children: [
-                        Card(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          elevation: 6,
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(
-                              children: [
-                                Lottie.asset(isOutside ? 'assets/lottie/clothesline_out.json' : 'assets/lottie/clothesline_in.json', height: 220),
-                                const SizedBox(height: 8),
-                                Text(isOutside ? 'ĐANG PHƠI NGOÀI TRỜI' : 'ĐÃ KÉO VÀO TRONG NHÀ', style: GoogleFonts.kanit(fontSize: 20, fontWeight: FontWeight.bold, color: isOutside ? Colors.orange[800] : Colors.indigo[800])),
+        body: SafeArea(
+          child: LayoutBuilder(builder: (context, constraints) {
+            return Container(
+              padding: const EdgeInsets.all(16),
+              color: isOutside ? Colors.orange[25] : Colors.blueGrey[25],
+              child: TabBarView(children: [
+                // Tab 1: Overview — Dashboard + Forecast
+                SingleChildScrollView(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                    DashboardPanel(
+                      isOutside: isOutside,
+                      isRaining: isRaining,
+                      light: light,
+                      temperature: temperature,
+                      position: position,
+                      mode: mode,
+                      locationName: _locationName,
+                      advice: _advice,
+                      forecastSummary: _forecastSummary,
+                      onRefreshForecast: _loadForecast,
+                      onAddReminder: _showAddReminderDialog,
+                      onSendNotification: (t, b) => _fb.sendNotification(t, b),
+                    ),
+                    const SizedBox(height: 12),
+                    ForecastPanel(
+                      forecast: _forecast,
+                      updatedAt: _forecastUpdatedAt,
+                      onRefresh: _loadForecast,
+                      onChangeCoords: () async {
+                        final res = await showDialog<Map<String, double>?>(
+                          context: context,
+                          builder: (ctx) {
+                            final latCtrl = TextEditingController(text: _forecastLat.toString());
+                            final lonCtrl = TextEditingController(text: _forecastLon.toString());
+                            return AlertDialog(
+                              title: const Text('Thay đổi tọa độ'),
+                              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                                TextField(controller: latCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Latitude')),
+                                TextField(controller: lonCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Longitude')),
+                              ]),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(ctx, null), child: const Text('Hủy')),
+                                ElevatedButton(onPressed: () { final lat = double.tryParse(latCtrl.text); final lon = double.tryParse(lonCtrl.text); if (lat == null || lon == null) return; Navigator.pop(ctx, {'lat': lat, 'lon': lon}); }, child: const Text('Lưu')),
                               ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Card(
-                          elevation: 3,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_smallMetric(Icons.umbrella, isRaining ? 'Mưa' : 'Tạnh', isRaining ? Colors.red : Colors.green), _smallMetric(Icons.wb_sunny, '$light lx', Colors.orange), _smallMetric(Icons.thermostat, '${temperature.toStringAsFixed(1)}°C', Colors.redAccent)]),
-                          ),
-                        ),
-                      ],
-                    ),
-
-                  const SizedBox(height: 18),
-
-                  Card(
-                    elevation: 4,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Dự báo 7 ngày', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                              Row(
-                                children: [
-                                  IconButton(icon: const Icon(Icons.refresh), onPressed: _loadForecast),
-                                  IconButton(icon: const Icon(Icons.place), onPressed: () async {
-                                    final res = await showDialog<Map<String, double>?>(
-                                      context: context,
-                                      builder: (ctx) {
-                                        final latCtrl = TextEditingController(text: _forecastLat.toString());
-                                        final lonCtrl = TextEditingController(text: _forecastLon.toString());
-                                        return AlertDialog(
-                                          title: const Text('Thay đổi tọa độ'),
-                                          content: Column(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              TextField(controller: latCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Latitude')),
-                                              TextField(controller: lonCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Longitude')),
-                                            ],
-                                          ),
-                                          actions: [
-                                            TextButton(onPressed: () => Navigator.pop(ctx, null), child: const Text('Hủy')),
-                                            ElevatedButton(onPressed: () { final lat = double.tryParse(latCtrl.text); final lon = double.tryParse(lonCtrl.text); if (lat == null || lon == null) return; Navigator.pop(ctx, {'lat': lat, 'lon': lon}); }, child: const Text('Lưu')),
-                                          ],
-                                        );
-                                      },
-                                    );
-                                    if (res != null) {
-                                      setState(() { _forecastLat = res['lat']!; _forecastLon = res['lon']!; });
-                                      await _loadForecast();
-                                    }
-                                  }),
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          if (_forecast.isEmpty)
-                            Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text('Không có dữ liệu thời tiết', style: TextStyle(color: Colors.grey[700])))
-                          else
-                            SizedBox(
-                              height: 110,
-                              child: ListView.separated(
-                                scrollDirection: Axis.horizontal,
-                                itemCount: _forecast.length,
-                                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                                itemBuilder: (ctx, i) {
-                                  final day = _forecast[i];
-                                  return InkWell(
-                                    onTap: () => _showHourlyForDay(day),
-                                    child: Container(
-                                      width: 110,
-                                      padding: const EdgeInsets.all(8),
-                                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
-                                      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                                        Text(day.niceDate, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                        const SizedBox(height: 6),
-                                        Text('${day.tempMax.toStringAsFixed(0)}°/${day.tempMin.toStringAsFixed(0)}°', style: const TextStyle(fontSize: 14)),
-                                        const SizedBox(height: 6),
-                                        Text('Mưa ${day.precipitationProbability.toStringAsFixed(0)}%', style: const TextStyle(color: Colors.blue)),
-                                      ]),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                          const SizedBox(height: 8),
-                          if (_forecastUpdatedAt != null) Text('Cập nhật: ${_forecastUpdatedAt.toString()}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 18),
-
-                  Center(
-                    child: SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: 'AUTO', label: Text('TỰ ĐỘNG'), icon: Icon(Icons.auto_mode)),
-                        ButtonSegment(value: 'MANUAL', label: Text('THỦ CÔNG'), icon: Icon(Icons.handyman)),
-                      ],
-                      selected: {mode},
-                      onSelectionChanged: (newMode) {
-                        setState(() { mode = newMode.first; });
-                        _fb.setMode(newMode.first);
+                            );
+                          },
+                        );
+                        return res;
                       },
+                      onShowHourly: _showHourlyForDay,
                     ),
-                  ),
+                    const SizedBox(height: 12),
+                    RemindersPanel(reminders: _reminders, onAddReminder: _showAddReminderDialog, onMarkDone: _markReminderDone),
+                    const SizedBox(height: 26),
+                  ]),
+                ),
 
-                  const SizedBox(height: 18),
-
-                  if (mode == 'MANUAL')
-                    Row(children: [Expanded(child: _bigButton('KÉO RA PHƠI', Icons.wb_sunny, Colors.orange, () => _pushCommand('OUT'))), const SizedBox(width: 12), Expanded(child: _bigButton('KÉO VÀO NHÀ', Icons.home, Colors.indigo, () => _pushCommand('IN')))])
-                  else
-                    Card(color: Colors.green[50], elevation: 2, child: Padding(padding: const EdgeInsets.all(16), child: Text('Chế độ TỰ ĐỘNG đang hoạt động — Giàn phơi tự động điều chỉnh', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)))),
-
-                  const SizedBox(height: 18),
-
-                  Card(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    elevation: 4,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: [
-                          _sensorTile(Icons.umbrella, 'Thời tiết', isRaining ? 'Mưa' : 'Tạnh', isRaining ? Colors.red : Colors.green),
-                          _sensorTile(Icons.thermostat, 'Nhiệt độ', '${temperature.toStringAsFixed(1)} °C', Colors.redAccent),
-                          _sensorTile(Icons.water_drop, 'Độ ẩm', '${humidity.toStringAsFixed(0)} %', Colors.blueAccent),
-                          _sensorTile(Icons.air, 'Gió', '${wind.toStringAsFixed(1)} m/s', Colors.teal),
-                          _sensorTile(Icons.wb_sunny, 'Ánh sáng', '$light lx', light > 600 ? Colors.orange : Colors.grey[700]!),
-                          _sensorTile(Icons.location_on, 'Vị trí', position, Colors.indigo),
+                // Tab 2: Controls — Mode, Manual action, ControlsPanel
+                SingleChildScrollView(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                    const SizedBox(height: 4),
+                    Center(
+                      child: SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: 'AUTO', label: Text('TỰ ĐỘNG'), icon: Icon(Icons.auto_mode)),
+                          ButtonSegment(value: 'MANUAL', label: Text('THỦ CÔNG'), icon: Icon(Icons.handyman)),
                         ],
+                        selected: {mode},
+                        onSelectionChanged: (newMode) {
+                          setState(() { mode = newMode.first; });
+                          _fb.setMode(newMode.first);
+                        },
                       ),
                     ),
-                  ),
 
-                  const SizedBox(height: 26),
-                ],
-              ),
-            ),
-          );
-        }),
+                    const SizedBox(height: 18),
+
+                    if (mode == 'MANUAL')
+                      (position == 'OUT'
+                          ? _bigButton('KÉO VÀO NHÀ', Icons.home, Colors.indigo, () async {
+                              await _pushCommand('IN');
+                            })
+                          : _bigButton('KÉO RA PHƠI', Icons.wb_sunny, Colors.orange, () async {
+                              if (isRaining) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Trời đang mưa: Không nên kéo quần áo ra phơi')));
+                                return;
+                              }
+                              await _pushCommand('OUT');
+                            }))
+                    else
+                      Card(color: Colors.green[50], elevation: 2, child: Padding(padding: const EdgeInsets.all(16), child: Text('Chế độ TỰ ĐỘNG đang hoạt động — Giàn phơi tự động điều chỉnh', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)))),
+
+                    const SizedBox(height: 18),
+
+                    ControlsPanel(
+                      hasClothes: _hasClothes,
+                      isRaining: isRaining,
+                      wind: wind,
+                      temperature: temperature,
+                      humidity: humidity,
+                      light: light,
+                      position: position,
+                      mode: mode,
+                      onToggleHasClothes: _toggleHasClothes,
+                      onConfirmStepper: (s) => _confirmStepper(s),
+                    ),
+
+                    const SizedBox(height: 26),
+                  ]),
+                ),
+              ]),
+            );
+          }),
+        ),
       ),
     );
   }
 
-  Widget _smallMetric(IconData icon, String label, Color color) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: color, size: 28),
-        const SizedBox(height: 6),
-        Text(label, style: const TextStyle(fontSize: 12)),
-      ],
-    );
-  }
-
-  Widget _chipMetric(String label, String value) {
-    return Chip(label: Text('$label: $value'));
-  }
-
-  Widget _sensorTile(IconData icon, String title, String value, Color color) {
-    return SizedBox(
-      width: 160,
-      child: Row(
-        children: [
-          CircleAvatar(radius: 20, backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color)),
-          const SizedBox(width: 10),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)), const SizedBox(height: 4), Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color))])),
-        ],
-      ),
-    );
-  }
+  
 
   Widget _bigButton(String text, IconData icon, Color color, VoidCallback onTap) {
     return ElevatedButton.icon(
