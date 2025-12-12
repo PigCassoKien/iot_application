@@ -36,7 +36,7 @@ class AutoController {
       if (map == null) return;
 
       // Robust readers to accept nested sensor.* or alternate key names
-      num? _readNum(Map<String, dynamic> m, List<String> keys) {
+      num? readNum(Map<String, dynamic> m, List<String> keys) {
         for (final k in keys) {
           if (k.contains('.')) {
             final parts = k.split('.');
@@ -64,13 +64,28 @@ class AutoController {
       }
 
       final mode = (map['mode'] as String?) ?? 'AUTO';
-      final position = (map['position'] as String?) ?? 'IN';
+      // Prefer numeric rackPosition (device-reported) if present
+      final rpRaw = map['rackPosition'] ?? map['rackposition'];
+      String position;
+      if (rpRaw != null) {
+        if (rpRaw is num) {
+          position = (rpRaw == 1) ? 'OUT' : (rpRaw == 0 ? 'IN' : 'IN');
+        } else if (rpRaw is String) {
+          final asNum = num.tryParse(rpRaw);
+          if (asNum != null) position = (asNum == 1) ? 'OUT' : (asNum == 0 ? 'IN' : 'IN');
+          else position = (rpRaw.toUpperCase() == 'OUT') ? 'OUT' : 'IN';
+        } else {
+          position = (map['position'] as String?) ?? 'IN';
+        }
+      } else {
+        position = (map['position'] as String?) ?? 'IN';
+      }
       final rainVal = map['rain'] ?? map['isRaining'] ?? (map['sensor'] is Map ? map['sensor']['rain'] : null);
       final isRaining = (rainVal == true) || (rainVal is String && (rainVal == 'true' || rainVal == '1')) || (rainVal is num && rainVal != 0);
-      final light = _readNum(map, ['light', 'sensor.light', 'lux'])?.toInt() ?? 0;
-      final temperature = _readNum(map, ['temperature', 'temp', 'sensor.temperature', 'sensor.temp'])?.toDouble() ?? 0.0;
-      final humidity = _readNum(map, ['humidity', 'sensor.humidity', 'sensor.hum'])?.toDouble() ?? 0.0;
-      final wind = _readNum(map, ['wind', 'sensor.wind'])?.toDouble() ?? 0.0;
+      final light = readNum(map, ['light', 'sensor.light', 'lux'])?.toInt() ?? 0;
+      final temperature = readNum(map, ['temperature', 'temp', 'sensor.temperature', 'sensor.temp'])?.toDouble() ?? 0.0;
+      final humidity = readNum(map, ['humidity', 'sensor.humidity', 'sensor.hum'])?.toDouble() ?? 0.0;
+      final wind = readNum(map, ['wind', 'sensor.wind'])?.toDouble() ?? 0.0;
 
       if (mode != 'AUTO') return;
 
@@ -90,23 +105,16 @@ class AutoController {
       if (decision == null) return; // no change recommended
 
       if (decision != position) {
-        // Optimistically update the position in DB so UI and other clients reflect the change.
-        // Fire-and-forget write; catch async errors to avoid unhandled futures
-        _fb.setPosition(decision).catchError((_) {});
-        // Push a reliable command into the command queue so the device can
-        // acknowledge execution. This is preferred over directly writing
-        // `control/position` because it supports ack/retry.
+        // In this setup the device listens to `/control/stepper`.
+        // Send a stepper command (1 = OUT, -1 = IN) and record a command.
+        final step = (decision == 'OUT') ? 1 : -1;
+        _fb.pushStepperCommand(step).catchError((_) {});
         final cmd = {
-          'type': 'SET_POSITION',
-          'position': decision,
+          'type': 'STEPPER',
+          'step': step,
           'source': 'auto',
         };
-        _fb.pushControlCommand(cmd).then((cmdId) {
-          // Optionally log cmdId somewhere or attach to notification payload
-        }).catchError((e) {
-          // If pushing command fails, ensure position is written
-          _fb.setPosition(decision).catchError((_) {});
-        });
+        _fb.pushControlCommand(cmd).then((cmdId) {}).catchError((_) {});
 
         // write a notification entry for backend or other clients
         final title = 'Giàn phơi đang được ${decision == 'OUT' ? 'kéo ra' : 'kéo vào'}';

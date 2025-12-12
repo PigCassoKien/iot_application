@@ -3,12 +3,11 @@ import 'package:flutter/material.dart';
 class ControlsPanel extends StatelessWidget {
   final bool hasClothes;
   final bool isRaining;
-  final double wind;
   final double temperature;
   final double humidity;
-  final int light;
   final String position;
   final String mode;
+  final int stepperCommand;
   final VoidCallback onToggleHasClothes;
   final Future<void> Function(int step) onConfirmStepper;
 
@@ -16,12 +15,11 @@ class ControlsPanel extends StatelessWidget {
     super.key,
     required this.hasClothes,
     required this.isRaining,
-    required this.wind,
     required this.temperature,
     required this.humidity,
-    required this.light,
     required this.position,
     required this.mode,
+    this.stepperCommand = 0,
     required this.onToggleHasClothes,
     required this.onConfirmStepper,
   });
@@ -61,7 +59,7 @@ class ControlsPanel extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [const Icon(Icons.checkroom, size: 28), const SizedBox(width: 8), Flexible(child: const Text('Quần áo trên giá', style: TextStyle(fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis))]),
+                  const Row(children: [Icon(Icons.checkroom, size: 28), SizedBox(width: 8), Flexible(child: Text('Quần áo trên giá', style: TextStyle(fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis))]),
                   const SizedBox(height: 8),
                   Text('Ghi nhận liệu còn quần áo trên giá hay không. Ảnh hưởng đến hành vi tự động.', style: TextStyle(fontSize: 12, color: Colors.grey[700])),
                   const SizedBox(height: 10),
@@ -78,7 +76,7 @@ class ControlsPanel extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [const Icon(Icons.tune, size: 28), const SizedBox(width: 8), const Text('Điều khiển Stepper', style: TextStyle(fontWeight: FontWeight.w600))]),
+                  const Row(children: [Icon(Icons.tune, size: 28), SizedBox(width: 8), Text('Điều khiển Stepper', style: TextStyle(fontWeight: FontWeight.w600))]),
                   const SizedBox(height: 8),
                   Text('Sử dụng để kéo ra / thu vào ngay lập tức.', style: TextStyle(fontSize: 12, color: Colors.grey[700])),
                   const SizedBox(height: 12),
@@ -86,10 +84,10 @@ class ControlsPanel extends StatelessWidget {
                     Expanded(
                       child: Semantics(
                         button: true,
-                        enabled: !isRaining && hasClothes,
+                        enabled: !isRaining && hasClothes && stepperCommand == 0,
                         label: 'Kéo ra',
                         child: ElevatedButton.icon(
-                          onPressed: (isRaining || !hasClothes) ? null : () => onConfirmStepper(1),
+                          onPressed: (isRaining || !hasClothes || stepperCommand != 0) ? null : () => onConfirmStepper(1),
                           icon: const Icon(Icons.arrow_upward),
                           label: const Text('KÉO RA'),
                           style: ElevatedButton.styleFrom(
@@ -106,7 +104,7 @@ class ControlsPanel extends StatelessWidget {
                         button: true,
                         label: 'Thu về',
                         child: ElevatedButton.icon(
-                          onPressed: () => onConfirmStepper(-1),
+                          onPressed: (stepperCommand != 0) ? null : () => onConfirmStepper(-1),
                           icon: const Icon(Icons.arrow_downward),
                           label: const Text('THU VỀ'),
                           style: ElevatedButton.styleFrom(
@@ -119,7 +117,8 @@ class ControlsPanel extends StatelessWidget {
                     ),
                   ]),
                   const SizedBox(height: 8),
-                  if (isRaining) Padding(padding: const EdgeInsets.only(top: 8), child: Row(children: [const Icon(Icons.warning, color: Colors.red), const SizedBox(width: 8), Expanded(child: Text('Cảnh báo: Trời đang mưa — thao tác kéo ra bị khoá', style: const TextStyle(color: Colors.red), maxLines: 2, overflow: TextOverflow.ellipsis))])),
+                  if (isRaining) const Padding(padding: EdgeInsets.only(top: 8), child: Row(children: [Icon(Icons.warning, color: Colors.red), SizedBox(width: 8), Expanded(child: Text('Cảnh báo: Trời đang mưa — thao tác kéo ra bị khoá', style: TextStyle(color: Colors.red), maxLines: 2, overflow: TextOverflow.ellipsis))])),
+                  if (stepperCommand != 0) Padding(padding: const EdgeInsets.only(top: 8), child: Row(children: [const Icon(Icons.sync, color: Colors.blue), const SizedBox(width: 8), Expanded(child: Text('Giàn phơi đang được ${stepperCommand == 1 ? 'kéo ra' : 'thu về'}...', style: const TextStyle(color: Colors.blue), maxLines: 2, overflow: TextOverflow.ellipsis))])),
                 ]),
               ),
             );
@@ -134,8 +133,6 @@ class ControlsPanel extends StatelessWidget {
             _sensorTile(Icons.umbrella, 'Thời tiết', isRaining ? 'Mưa' : 'Tạnh', isRaining ? Colors.red : Colors.green),
             _sensorTile(Icons.thermostat, 'Nhiệt độ', '${temperature.toStringAsFixed(1)} °C', Colors.redAccent),
             _sensorTile(Icons.water_drop, 'Độ ẩm', '${humidity.toStringAsFixed(0)} %', Colors.blueAccent),
-            _sensorTile(Icons.air, 'Gió', '${wind.toStringAsFixed(1)} m/s', Colors.teal),
-            _sensorTile(Icons.wb_sunny, 'Ánh sáng', '$light lx', light > 600 ? Colors.orange : Colors.grey[700]!),
             _sensorTile(Icons.location_on, 'Vị trí', position, Colors.indigo),
           ]),
         ]),

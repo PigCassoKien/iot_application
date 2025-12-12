@@ -26,8 +26,8 @@ class _HomePageState extends State<HomePage> {
   // Forecast data
   List<WeatherDay> _forecast = [];
   List<WeatherHour> _hourly = [];
-  double _forecastLat = 21.0278;
-  double _forecastLon = 105.8342;
+  final double _forecastLat = 21.0278;
+  final double _forecastLon = 105.8342;
   DateTime? _forecastUpdatedAt;
   String? _locationName;
 
@@ -35,10 +35,13 @@ class _HomePageState extends State<HomePage> {
   String position = 'IN';
   String mode = 'AUTO';
   bool isRaining = false;
-  int light = 0;
   double temperature = 0.0;
   double humidity = 0.0;
-  double wind = 0.0;
+
+  // Current control.stepper value (0 = idle, 1 = moving out, -1 = moving in)
+  int _controlStepper = 0;
+  DateTime? _lastAppStepperAt;
+  static const Duration _appActionGrace = Duration(seconds: 60);
 
   // App state
   bool _hasClothes = false;
@@ -51,6 +54,7 @@ class _HomePageState extends State<HomePage> {
   StreamSubscription? _statusSub;
   StreamSubscription? _controlSub;
   StreamSubscription? _remindersSub;
+  StreamSubscription? _sensorSub;
 
   @override
   void initState() {
@@ -92,6 +96,33 @@ class _HomePageState extends State<HomePage> {
       setState(() => _reminders = list);
     });
 
+    // Listen to sensor node directly (`/sensor`) for primary humidity/temp readings
+    _sensorSub = _fb.sensorStream.listen((event) {
+      final snap = event.snapshot;
+      final map = _fb.snapshotToMap(snap);
+      if (map == null) return;
+
+      double? parseDouble(dynamic v) {
+        if (v == null) return null;
+        if (v is num) return v.toDouble();
+        if (v is String) return double.tryParse(v);
+        return null;
+      }
+
+      final t = parseDouble(map['temp'] ?? map['temperature'] ?? map['temperatureC'] ?? map['tempC']);
+      final h = parseDouble(map['humidity'] ?? map['hum'] ?? map['h']);
+
+      if (!mounted) return;
+      setState(() {
+        temperature = t ?? temperature;
+        humidity = h ?? humidity;
+      });
+    });
+
+    // Ensure stepper defaults to 0 (idle) at app startup. The device will
+    // only act when user sets stepper to 1 or -1.
+    _fb.ensureStepperZero().catchError((_) {});
+
     // Perform one-time initial reads so UI shows current DB immediately
     _fb.getStatusOnce().then((m) {
       if (m != null) _applyStatusMap(m);
@@ -100,11 +131,29 @@ class _HomePageState extends State<HomePage> {
     _fb.getControlOnce().then((m) {
       if (m != null) _applyControlMap(m);
     }).catchError((_) {});
+
+    // One-time read of sensor node to populate UI immediately
+    _fb.getSensorOnce().then((m) {
+      if (m == null) return;
+      double? parseDouble(dynamic v) {
+        if (v == null) return null;
+        if (v is num) return v.toDouble();
+        if (v is String) return double.tryParse(v);
+        return null;
+      }
+      final t = parseDouble(m['temp'] ?? m['temperature'] ?? m['tempC']);
+      final h = parseDouble(m['humidity'] ?? m['hum']);
+      if (!mounted) return;
+      setState(() {
+        temperature = t ?? temperature;
+        humidity = h ?? humidity;
+      });
+    }).catchError((_) {});
   }
 
   void _applyStatusMap(Map<String, dynamic> map) {
     // Helper to read numeric values from multiple possible keys
-    num? _readNum(Map<String, dynamic> m, List<String> keys) {
+    num? readNum(Map<String, dynamic> m, List<String> keys) {
       for (final k in keys) {
         if (k.contains('.')) {
           final parts = k.split('.');
@@ -131,23 +180,60 @@ class _HomePageState extends State<HomePage> {
       return null;
     }
 
-    final tempVal = _readNum(map, ['temperature', 'temp', 'sensor.temperature', 'sensor.temp']);
-    final humVal = _readNum(map, ['humidity', 'sensor.humidity', 'sensor.hum']);
-    final lightVal = _readNum(map, ['light', 'sensor.light', 'lux']);
-    final windVal = _readNum(map, ['wind', 'sensor.wind']);
+    final tempVal = readNum(map, ['temperature', 'temp', 'sensor.temperature', 'sensor.temp']);
+    final humVal = readNum(map, ['humidity', 'sensor.humidity', 'sensor.hum']);
 
     final rainVal = map['rain'] ?? map['isRaining'] ?? map['raining'] ?? (map['sensor'] is Map ? (map['sensor']['rain'] ?? map['sensor']['isRaining']) : null);
 
     if (!mounted) return;
+    // Determine if rackPosition changed compared to current `position`
+    final oldPosition = position;
+    String posFromRack = position;
+    final rpRaw = map['rackPosition'] ?? map['rackposition'];
+    if (rpRaw != null) {
+      if (rpRaw is num) {
+        // Arduino uses 1 = OUT, 0 = IN
+        posFromRack = (rpRaw == 1) ? 'OUT' : (rpRaw == 0 ? 'IN' : position);
+      } else if (rpRaw is String) {
+        final asNum = num.tryParse(rpRaw);
+        if (asNum != null) posFromRack = (asNum == 1) ? 'OUT' : (asNum == 0 ? 'IN' : position);
+        else posFromRack = (rpRaw.toUpperCase() == 'OUT') ? 'OUT' : ((rpRaw.toUpperCase() == 'IN') ? 'IN' : position);
+      }
+    }
     setState(() {
       temperature = tempVal?.toDouble() ?? temperature;
       humidity = humVal?.toDouble() ?? humidity;
-      light = (lightVal != null) ? lightVal.toInt() : light;
-      wind = windVal?.toDouble() ?? wind;
+
+
       isRaining = (rainVal == true) || (rainVal is String && (rainVal == 'true' || rainVal == '1')) || (rainVal is num && rainVal != 0);
-      position = (map['position'] as String?) ?? position;
+      position = posFromRack;
       mode = (map['mode'] as String?) ?? mode;
     });
+    final newPosition = position;
+    // If position changed as reported by device, show success message
+    if (oldPosition != newPosition) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Giàn phơi đã được ${newPosition == 'OUT' ? 'kéo ra' : 'thu về'} thành công.')));
+      });
+      // Ensure control.stepper is cleared when device reports a new rackPosition
+      // so the DB/UI reflect an idle device state.
+      _fb.ensureStepperZero().catchError((_) {});
+      // If device reports we are now IN (retracted) and conditions are OK,
+      // and the retraction was NOT initiated recently by the app, then
+      // in AUTO mode request an OUT movement so the clothesline returns out.
+      if (newPosition == 'IN') {
+        if (mode == 'AUTO' && _hasClothes && !isRaining) {
+          final now = DateTime.now();
+          final recentApp = _lastAppStepperAt != null && now.difference(_lastAppStepperAt!) < _appActionGrace;
+          if (!recentApp && _controlStepper == 0) {
+            // trigger automatic pull-out
+            _lastAppStepperAt = null; // mark as not-app-initiated
+            _fb.pushStepperCommand(1);
+            _fb.pushControlCommand({'type': 'STEPPER', 'position': 1, 'source': 'auto'});
+          }
+        }
+      }
+    }
 
     // Recompute advice when sensors/status change
     _computeAdvice();
@@ -157,11 +243,32 @@ class _HomePageState extends State<HomePage> {
     final hc = map['hasClothes'];
     if (hc == null) return;
     bool val = false;
-    if (hc is bool) val = hc;
-    else if (hc is num) val = hc != 0;
+    if (hc is bool) {
+      val = hc;
+    } else if (hc is num) val = hc != 0;
     else if (hc is String) val = hc == 'true' || hc == '1';
+    // Update hasClothes first
     if (!mounted) return;
     setState(() => _hasClothes = val);
+
+    // Also observe control.stepper for in-progress movement
+    final sp = map['stepper'];
+    int stepperVal = 0;
+    if (sp is num) stepperVal = sp.toInt();
+    else if (sp is String) stepperVal = int.tryParse(sp) ?? 0;
+
+    if (stepperVal != _controlStepper) {
+      // Moving started
+      if (stepperVal != 0) {
+        setState(() => _controlStepper = stepperVal);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Giàn phơi đang được ${stepperVal == 1 ? 'kéo ra' : 'thu về'}...')));
+        });
+      } else {
+        // Moved back to idle
+        setState(() => _controlStepper = 0);
+      }
+    }
   }
 
   @override
@@ -172,6 +279,7 @@ class _HomePageState extends State<HomePage> {
     try { _statusSub?.cancel(); } catch (_) {}
     try { _controlSub?.cancel(); } catch (_) {}
     try { _remindersSub?.cancel(); } catch (_) {}
+    try { _sensorSub?.cancel(); } catch (_) {}
     super.dispose();
   }
 
@@ -218,8 +326,9 @@ class _HomePageState extends State<HomePage> {
       }
     } else {
       // No forecast available — fall back to sensor hints
-      if (humidity >= 85.0) advice = 'Không có dữ liệu dự báo — độ ẩm cao, cân nhắc sấy.';
-      else if (isRaining) advice = 'Không có dữ liệu dự báo và đang mưa — mang đi sấy.';
+      if (humidity >= 85.0) {
+        advice = 'Không có dữ liệu dự báo — độ ẩm cao, cân nhắc sấy.';
+      } else if (isRaining) advice = 'Không có dữ liệu dự báo và đang mưa — mang đi sấy.';
       else advice = 'Không có dữ liệu dự báo — theo dõi thời tiết trước khi phơi.';
     }
 
@@ -273,6 +382,10 @@ class _HomePageState extends State<HomePage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đang có lệnh khác, vui lòng chờ')));
       return;
     }
+    if (_controlStepper != 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Thiết bị đang di chuyển, vui lòng chờ')));
+      return;
+    }
 
     // Optimistic UI update: show requested position immediately
     final previousPosition = position;
@@ -283,12 +396,12 @@ class _HomePageState extends State<HomePage> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Gửi lệnh đến thiết bị...')));
 
     try {
-      // Update position immediately in DB so clients reflect the change.
-      try {
-        await _fb.setPosition(pos);
-      } catch (_) {}
+      // Send stepper position (1 = OUT, 0 = IN). Device listens to `/control/stepper`.
+      final desiredPosition = (pos == 'OUT') ? 1 : 0;
+      _lastAppStepperAt = DateTime.now();
+      await _fb.pushStepperCommand(desiredPosition);
 
-      final cmdId = await _fb.pushControlCommand({'type': 'SET_POSITION', 'position': pos, 'source': 'app'});
+      final cmdId = await _fb.pushControlCommand({'type': 'STEPPER', 'position': desiredPosition, 'source': 'app'});
 
       // Send a user-visible notification about manual action
       try {
@@ -296,7 +409,7 @@ class _HomePageState extends State<HomePage> {
         final body = 'Người dùng đã yêu cầu ${pos == 'OUT' ? 'kéo quần áo ra phơi' : 'kéo quần áo vào nhà'}.';
         await _fb.sendNotification(title, body);
       } catch (_) {}
-      final ref = FirebaseDatabase.instance.ref('control/commands/$cmdId');
+      final ref = FirebaseDatabase.instance.ref('commands/$cmdId');
       final sub = ref.onValue.listen((event) {
         final snap = event.snapshot;
         final v = snap.value;
@@ -305,7 +418,15 @@ class _HomePageState extends State<HomePage> {
         if (status == 'processing') {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Thiết bị đang thực hiện lệnh...')));
         } else if (status == 'done') {
-          final newPos = (v['position'] as String?) ?? pos;
+          // Accept numeric (1/0) or string position from command result.
+          final dynPos = v['position'];
+          String newPos = pos;
+          if (dynPos is num) newPos = (dynPos == 1) ? 'OUT' : 'IN';
+          else if (dynPos is String) {
+            final asNum = int.tryParse(dynPos);
+            if (asNum != null) newPos = (asNum == 1) ? 'OUT' : 'IN';
+            else newPos = (dynPos.toUpperCase() == 'OUT') ? 'OUT' : ((dynPos.toUpperCase() == 'IN') ? 'IN' : pos);
+          }
           // Confirmed by device
           setState(() => position = newPos);
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lệnh đã thực hiện xong')));
@@ -346,11 +467,13 @@ class _HomePageState extends State<HomePage> {
         if (isRaining) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cảnh báo: Trời đang mưa — không kéo ra')));
         } else {
-          await _fb.pushStepperCommand(1);
+          _lastAppStepperAt = DateTime.now();
+          // await _fb.pushStepperCommand(0);
         }
       } else {
-        // When user marks removed, request stepper -1 to retract
-        await _fb.pushStepperCommand(-1);
+        // When user marks removed, request stepper 0 to retract
+        _lastAppStepperAt = DateTime.now();
+        // await _fb.pushStepperCommand(0);
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Không thể cập nhật trạng thái: $e')));
@@ -358,6 +481,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _sendStepper(int step) async {
+    if (_controlStepper != 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Thiết bị đang di chuyển, vui lòng chờ')));
+      return;
+    }
     // Guard: if trying to pull OUT but no clothes or raining, block
     if (step == 1) {
       if (!_hasClothes) {
@@ -370,6 +497,7 @@ class _HomePageState extends State<HomePage> {
       }
     }
     try {
+      _lastAppStepperAt = DateTime.now();
       await _fb.pushStepperCommand(step);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Gửi lệnh điều khiển stepper...')));
     } catch (e) {
@@ -438,8 +566,8 @@ class _HomePageState extends State<HomePage> {
                     DashboardPanel(
                       isOutside: isOutside,
                       isRaining: isRaining,
-                      light: light,
                       temperature: temperature,
+                      humidity: humidity,
                       position: position,
                       mode: mode,
                       locationName: _locationName,
@@ -463,8 +591,8 @@ class _HomePageState extends State<HomePage> {
                             return AlertDialog(
                               title: const Text('Thay đổi tọa độ'),
                               content: Column(mainAxisSize: MainAxisSize.min, children: [
-                                TextField(controller: latCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Latitude')),
-                                TextField(controller: lonCtrl, keyboardType: TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Longitude')),
+                                TextField(controller: latCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Latitude')),
+                                TextField(controller: lonCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Longitude')),
                               ]),
                               actions: [
                                 TextButton(onPressed: () => Navigator.pop(ctx, null), child: const Text('Hủy')),
@@ -516,19 +644,18 @@ class _HomePageState extends State<HomePage> {
                               await _pushCommand('OUT');
                             }))
                     else
-                      Card(color: Colors.green[50], elevation: 2, child: Padding(padding: const EdgeInsets.all(16), child: Text('Chế độ TỰ ĐỘNG đang hoạt động — Giàn phơi tự động điều chỉnh', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)))),
+                      Card(color: Colors.green[50], elevation: 2, child: const Padding(padding: EdgeInsets.all(16), child: Text('Chế độ TỰ ĐỘNG đang hoạt động — Giàn phơi tự động điều chỉnh', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w600)))),
 
                     const SizedBox(height: 18),
 
                     ControlsPanel(
                       hasClothes: _hasClothes,
                       isRaining: isRaining,
-                      wind: wind,
                       temperature: temperature,
                       humidity: humidity,
-                      light: light,
                       position: position,
                       mode: mode,
+                      stepperCommand: _controlStepper,
                       onToggleHasClothes: _toggleHasClothes,
                       onConfirmStepper: (s) => _confirmStepper(s),
                     ),
@@ -588,7 +715,7 @@ class _HomePageState extends State<HomePage> {
                           leading: Text(h.niceHour, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                           title: Text('${h.temperature.toStringAsFixed(0)}°', style: const TextStyle(fontSize: 16)),
                           subtitle: Text('Mưa: ${h.precipitationProbability.toStringAsFixed(0)} % — ${h.precipitation.toStringAsFixed(1)} mm'),
-                          trailing: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.invert_colors, color: Colors.blue, size: 18), const SizedBox(height: 4), Text('${h.precipitationProbability.toStringAsFixed(0)}%', style: const TextStyle(color: Colors.blue))]),
+                          trailing: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.invert_colors, color: Colors.blue, size: 18), const SizedBox(height: 4), Text('${h.precipitationProbability.toStringAsFixed(0)}%', style: const TextStyle(color: Colors.blue))]),
                         );
                       },
                     ),

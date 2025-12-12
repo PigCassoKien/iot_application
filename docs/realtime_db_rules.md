@@ -10,13 +10,16 @@ This is a minimal set of Realtime Database rules to get started. Adjust to your 
       ".write": "auth != null && (newData.child('uid').val() === auth.uid || auth.token.admin === true)"
     },
     "control": {
-      "commands": {
-        ".read": "auth != null",
-        ".write": "auth != null", // allow app to push commands; refine for production
-        "$cmdId": {
-          // validate structure and enums
-          ".validate": "newData.hasChildren(['type','position','source','timestamp','status'])"
-        }
+      // Keep small runtime control fields under `/control` (hasClothes, stepper, mode)
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "commands": {
+      // Top-level commands node (devices and simulators consume this)
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$cmdId": {
+        ".validate": "newData.hasChildren(['type','source','timestamp','status'])"
       }
     },
     "status": {
@@ -34,6 +37,6 @@ This is a minimal set of Realtime Database rules to get started. Adjust to your 
 ```
 
 Notes:
-- For production, differentiate device credentials vs user credentials. Devices should authenticate using a service account or restricted credential and allowed to write `/status` and update `/control/commands/*/status`.
+- For production, differentiate device credentials vs user credentials. Devices should authenticate using a service account or restricted credential and allowed to write `/status` and update `/commands/*/status`.
 - The app users (normal users) may be allowed to push commands but should not be allowed to mark them `done` (only devices should).
 - Cloud Functions run as admin and can read/write any node.

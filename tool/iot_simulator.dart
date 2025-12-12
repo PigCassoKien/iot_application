@@ -86,40 +86,36 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step) {
         'position': 'OUT',
         'mode': 'AUTO',
         'rain': false,
-        'light': 800,
         'temperature': 30.0,
         'humidity': 40.0,
-        'wind': 2.5,
+        
       };
     case 'raining_in':
       return {
         'position': 'IN',
         'mode': 'AUTO',
         'rain': true,
-        'light': 50,
         'temperature': 22.0,
         'humidity': 95.0,
-        'wind': 3.0,
+        
       };
     case 'dark_in':
       return {
         'position': 'IN',
         'mode': 'AUTO',
         'rain': false,
-        'light': 30,
         'temperature': 18.0,
         'humidity': 70.0,
-        'wind': 1.0,
+        
       };
     case 'manual_out':
       return {
         'position': 'OUT',
         'mode': 'MANUAL',
         'rain': false,
-        'light': 500,
         'temperature': 25.0,
         'humidity': 50.0,
-        'wind': 2.0,
+        
       };
     case 'fluctuate':
       // Simulate changing conditions over time
@@ -129,60 +125,54 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step) {
           'position': 'OUT',
           'mode': 'AUTO',
           'rain': false,
-          'light': 700,
           'temperature': 28.0,
           'humidity': 45.0,
-          'wind': 3.0,
+          
         };
       } else if (cycle == 1) {
         return {
           'position': 'OUT',
           'mode': 'AUTO',
           'rain': false,
-          'light': 500,
           'temperature': 26.0,
           'humidity': 55.0,
-          'wind': 4.0,
+          
         };
       } else if (cycle == 2) {
         return {
           'position': 'IN',
           'mode': 'AUTO',
           'rain': true,
-          'light': 100,
           'temperature': 21.0,
           'humidity': 92.0,
-          'wind': 5.0,
+          
         };
       } else if (cycle == 3) {
         return {
           'position': 'IN',
           'mode': 'AUTO',
           'rain': true,
-          'light': 80,
           'temperature': 20.0,
           'humidity': 94.0,
-          'wind': 6.0,
+          
         };
       } else if (cycle == 4) {
         return {
           'position': 'OUT',
           'mode': 'AUTO',
           'rain': false,
-          'light': 650,
           'temperature': 27.0,
           'humidity': 48.0,
-          'wind': 8.0,
+          
         };
       }
       return {
         'position': 'IN',
         'mode': 'AUTO',
         'rain': false,
-        'light': 150,
         'temperature': 16.0,
         'humidity': 80.0,
-        'wind': 9.0,
+        
       };
     default:
       return null;

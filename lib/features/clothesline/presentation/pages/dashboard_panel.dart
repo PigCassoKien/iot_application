@@ -5,8 +5,8 @@ import 'package:google_fonts/google_fonts.dart';
 class DashboardPanel extends StatelessWidget {
   final bool isOutside;
   final bool isRaining;
-  final int light;
   final double temperature;
+  final double humidity;
   final String position;
   final String mode;
   final String? locationName;
@@ -20,8 +20,8 @@ class DashboardPanel extends StatelessWidget {
     super.key,
     required this.isOutside,
     required this.isRaining,
-    required this.light,
     required this.temperature,
+    required this.humidity,
     required this.position,
     required this.mode,
     this.locationName,
@@ -68,7 +68,11 @@ class DashboardPanel extends StatelessWidget {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           child: Padding(
             padding: const EdgeInsets.all(12),
-            child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_smallMetric(Icons.umbrella, isRaining ? 'Mưa' : 'Tạnh', isRaining ? Colors.red : Colors.green), _smallMetric(Icons.wb_sunny, '$light lx', Colors.orange), _smallMetric(Icons.thermostat, '${temperature.toStringAsFixed(1)}°C', Colors.redAccent)]),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+              _smallMetric(Icons.umbrella, isRaining ? 'Mưa' : 'Tạnh', isRaining ? Colors.red : Colors.green),
+              _smallMetric(Icons.water_drop, '${humidity.toStringAsFixed(0)} %', const Color.fromARGB(255, 20, 111, 230)),
+              _smallMetric(Icons.thermostat, '${temperature.toStringAsFixed(1)}°C', Colors.redAccent),
+            ]),
           ),
         ),
         const SizedBox(height: 12),
@@ -79,7 +83,7 @@ class DashboardPanel extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Expanded(child: Text('Lời khuyên thời tiết', style: const TextStyle(fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                const Expanded(child: Text('Lời khuyên thời tiết', style: TextStyle(fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis)),
                 Flexible(child: Wrap(alignment: WrapAlignment.end, spacing: 8, children: [TextButton.icon(onPressed: onRefreshForecast, icon: const Icon(Icons.refresh), label: const Text('Cập nhật')), TextButton.icon(onPressed: onAddReminder, icon: const Icon(Icons.add_alert), label: const Text('Thêm nhắc nhở'))]))
               ]),
               const SizedBox(height: 8),
@@ -88,7 +92,7 @@ class DashboardPanel extends StatelessWidget {
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(color: Colors.green[50], borderRadius: BorderRadius.circular(8)),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(Icons.check_circle, color: Colors.green),
+                  const Icon(Icons.check_circle, color: Colors.green),
                   const SizedBox(width: 10),
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(advice.isNotEmpty ? advice : 'Thời tiết hiện tại — xem chi tiết để biết lời khuyên', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),

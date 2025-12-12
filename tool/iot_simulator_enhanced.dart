@@ -75,10 +75,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
         'position': 'OUT',
         'mode': 'AUTO',
         'rain': false,
-        'light': 900,
         'temperature': 28.0,
         'humidity': 45.0,
-        'wind': 1.2,
+        
         'timestamp': DateTime.now().toIso8601String(),
       };
     case 'raining_in':
@@ -87,10 +86,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
         'position': 'IN',
         'mode': 'AUTO',
         'rain': true,
-        'light': 60,
         'temperature': 22.0,
         'humidity': 92.0,
-        'wind': 2.5,
+        
         'timestamp': DateTime.now().toIso8601String(),
       };
     case 'dark_in':
@@ -99,10 +97,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
         'position': 'IN',
         'mode': 'AUTO',
         'rain': false,
-        'light': 30,
         'temperature': 4.0,
         'humidity': 80.0,
-        'wind': 1.0,
+        
         'timestamp': DateTime.now().toIso8601String(),
       };
     case 'manual_out':
@@ -111,10 +108,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
         'position': 'OUT',
         'mode': 'MANUAL',
         'rain': false,
-        'light': 500,
         'temperature': 24.0,
         'humidity': 50.0,
-        'wind': 0.8,
+        
         'timestamp': DateTime.now().toIso8601String(),
       };
     case 'fluctuate':
@@ -126,10 +122,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
           'position': 'OUT',
           'mode': 'AUTO',
           'rain': false,
-          'light': 800,
           'temperature': 26.0,
           'humidity': 50.0,
-          'wind': 1.0,
+          
           'timestamp': DateTime.now().toIso8601String(),
         };
       } else if (cycle < 6) {
@@ -138,10 +133,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
           'position': 'IN',
           'mode': 'AUTO',
           'rain': true,
-          'light': 40,
           'temperature': 23.0,
           'humidity': 90.0,
-          'wind': 2.0,
+          
           'timestamp': DateTime.now().toIso8601String(),
         };
       } else if (cycle < 9) {
@@ -150,10 +144,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
           'position': 'OUT',
           'mode': 'AUTO',
           'rain': false,
-          'light': 700,
           'temperature': 20.0,
           'humidity': 60.0,
-          'wind': 3.5,
+          
           'timestamp': DateTime.now().toIso8601String(),
         };
       } else {
@@ -162,10 +155,9 @@ Map<String, dynamic>? _payloadForScenario(String scenario, int step, String devi
           'position': 'IN',
           'mode': 'AUTO',
           'rain': false,
-          'light': 120,
           'temperature': 16.0,
           'humidity': 85.0,
-          'wind': 6.0,
+          
           'timestamp': DateTime.now().toIso8601String(),
         };
       }
@@ -266,7 +258,7 @@ Future<void> sendStatus(String dbUrl, Map<String, dynamic> payload, String? auth
 
 /// Fetch pending commands and execute them (simulation).
 Future<void> fetchAndExecuteCommands(String dbUrl, String? auth, String deviceId) async {
-  final uri = Uri.parse('$dbUrl/control/commands.json${auth != null ? '?auth=$auth' : ''}');
+  final uri = Uri.parse('$dbUrl/commands.json${auth != null ? '?auth=$auth' : ''}');
   final resp = await http.get(uri);
   if (resp.statusCode != 200) return;
   final data = jsonDecode(resp.body) as Map<String, dynamic>?;
@@ -285,7 +277,7 @@ Future<void> fetchAndExecuteCommands(String dbUrl, String? auth, String deviceId
     print('Found pending command $cmdId: $cmdType -> $position');
 
     // mark processing
-    final procUri = Uri.parse('$dbUrl/control/commands/$cmdId.json${auth != null ? '?auth=$auth' : ''}');
+    final procUri = Uri.parse('$dbUrl/commands/$cmdId.json${auth != null ? '?auth=$auth' : ''}');
     final procBody = jsonEncode({'status': 'processing', 'processorId': deviceId, 'processing_ts': DateTime.now().toIso8601String()});
     await http.patch(procUri, headers: {'Content-Type': 'application/json'}, body: procBody);
 
@@ -299,10 +291,9 @@ Future<void> fetchAndExecuteCommands(String dbUrl, String? auth, String deviceId
       'position': position,
       'mode': 'MANUAL',
       'rain': false,
-      'light': 500,
       'temperature': 24.0,
       'humidity': 50.0,
-      'wind': 0.8,
+      
       'timestamp': DateTime.now().toIso8601String(),
     };
     await http.put(statusUri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(newStatus));
